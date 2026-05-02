@@ -1,12 +1,14 @@
 use anyhow::Error;
+use core::fmt::Write as _;
+use syn::{Item, ItemFn, Visibility, parse_file};
 
 use crate::types::Context;
 
 use super::{
 	api::{CrateType, Mode, PlayResult, PlaygroundRequest},
 	util::{
-		format_play_eval_stderr, generic_help, hoise_crate_attributes, parse_flags, send_reply,
-		stub_message, GenericHelp,
+		GenericHelp, format_play_eval_stderr, generic_help, hoise_crate_attributes, parse_flags,
+		send_reply, stub_message,
 	},
 };
 
@@ -77,8 +79,8 @@ pub async fn microbench(
 	// insert convenience import for users
 	let after_crate_attrs = "#[allow(unused_imports)] use std::hint::black_box;\n";
 
-	let pub_fn_indices = user_code.match_indices("pub fn ").collect::<Vec<_>>();
-	match pub_fn_indices.len() {
+	let pub_fn_names: Vec<String> = extract_pub_fn_names_from_user_code(user_code);
+	match pub_fn_names.len() {
 		0 => {
 			ctx.say("No public functions (`pub fn`) found for benchmarking :thinking:")
 				.await?;
@@ -90,20 +92,14 @@ pub async fn microbench(
 			return Ok(());
 		}
 		_ => {}
-	};
+	}
 
 	// insert this after user code
 	let mut after_code = BENCH_FUNCTION.to_owned();
 	after_code += "fn main() {\nbench(&[";
-	for (index, _) in pub_fn_indices {
-		let function_name_start = index + "pub fn ".len();
-		let function_name_end = match user_code[function_name_start..].find('(') {
-			Some(x) => x + function_name_start,
-			None => continue,
-		};
-		let function_name = user_code[function_name_start..function_name_end].trim();
-
-		after_code += &format!("(\"{function_name}\", {function_name}), ");
+	for function_name in pub_fn_names {
+		writeln!(after_code, "(\"{function_name}\", {function_name}),")
+			.expect("Writing to a String should never fail");
 	}
 	after_code += "]);\n}\n";
 
@@ -153,6 +149,7 @@ that should be opaque to the optimizer: `number * 2` produces optimized integer 
 		mode_and_channel: false,
 		warn: true,
 		run: false,
+		aliasing_model: false,
 		example_code: "
 pub fn add() {
     black_box(black_box(42.0) + black_box(99.0));
@@ -162,4 +159,22 @@ pub fn mul() {
 }
 ",
 	})
+}
+
+fn extract_pub_fn_names_from_user_code(code: &str) -> Vec<String> {
+	let Ok(file) = parse_file(code) else {
+		return vec![];
+	};
+
+	file.items
+		.iter()
+		.filter_map(|item| {
+			if let Item::Fn(ItemFn { vis, sig, .. }) = item
+				&& matches!(vis, Visibility::Public(_))
+			{
+				return Some(sig.ident.to_string());
+			}
+			None
+		})
+		.collect()
 }

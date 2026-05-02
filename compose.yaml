@@ -1,0 +1,18 @@
+version: '3'
+
+services:
+  ferris:
+    build:
+      context: '.'
+      dockerfile: 'Containerfile'
+    restart: 'unless-stopped'
+    volumes:
+    - type: bind
+      source: ./database/
+      target: /usr/src/app/database/
+    - type: bind
+      source: ./logs/
+      target: /usr/src/app/logs/
+    - type: bind
+      source: ./config/
+      target: /usr/src/app/config/

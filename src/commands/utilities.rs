@@ -1,8 +1,16 @@
+use anyhow::{Error, anyhow};
+use itertools::Itertools;
+use poise::{
+	CreateReply,
+	serenity_prelude::{
+		self as serenity, ChannelType, Color, CreateEmbed, CreateEmbedFooter, EditThread, Timestamp,
+	},
+};
+use rand::Rng;
+use std::iter;
 use std::sync::LazyLock;
-
-use anyhow::{anyhow, Error};
-use poise::serenity_prelude as serenity;
-use poise::serenity_prelude::Timestamp;
+use std::time::Duration;
+use tracing::info;
 
 use crate::types::Context;
 
@@ -14,8 +22,7 @@ use crate::types::Context;
 	discard_spare_arguments
 )]
 pub async fn go(ctx: Context<'_>) -> Result<(), Error> {
-	use rand::Rng as _;
-	if rand::thread_rng().gen_bool(0.01) {
+	if rand::rng().random_bool(0.01) {
 		ctx.say("Yes").await?;
 	} else {
 		ctx.say("No").await?;
@@ -111,15 +118,15 @@ pub async fn conradluget(
 	text: String,
 ) -> Result<(), Error> {
 	static BASE_IMAGE: LazyLock<image::DynamicImage> = LazyLock::new(|| {
-		image::io::Reader::with_format(
+		image::ImageReader::with_format(
 			std::io::Cursor::new(&include_bytes!("../../assets/conrad.png")[..]),
 			image::ImageFormat::Png,
 		)
 		.decode()
 		.expect("failed to load image")
 	});
-	static FONT: LazyLock<rusttype::Font<'_>> = LazyLock::new(|| {
-		rusttype::Font::try_from_bytes(include_bytes!("../../assets/OpenSans.ttf"))
+	static FONT: LazyLock<ab_glyph::FontRef<'_>> = LazyLock::new(|| {
+		ab_glyph::FontRef::try_from_slice(include_bytes!("../../assets/OpenSans.ttf"))
 			.expect("failed to load font")
 	});
 
@@ -129,23 +136,22 @@ pub async fn conradluget(
 		image::Rgba([201, 209, 217, 255]),
 		57,
 		286,
-		rusttype::Scale::uniform(65.0),
-		&FONT,
+		65.0,
+		&*FONT,
 		&text,
 	);
 
 	let mut img_bytes = Vec::with_capacity(200_000); // preallocate 200kB for the img
 	image::DynamicImage::ImageRgba8(image).write_to(
 		&mut std::io::Cursor::new(&mut img_bytes),
-		image::ImageOutputFormat::Png,
+		image::ImageFormat::Png,
 	)?;
 
 	let filename = text + ".png";
 
 	let attachment = serenity::CreateAttachment::bytes(img_bytes, filename);
 
-	ctx.channel_id()
-		.send_files(ctx, vec![attachment], serenity::CreateMessage::new())
+	ctx.send(poise::CreateReply::default().attachment(attachment))
 		.await?;
 
 	Ok(())
@@ -224,6 +230,7 @@ pub async fn ban(
 /// Self-timeout yourself.
 /// You can specify how long you want to timeout yourself for, either in hours
 /// or in minutes.
+#[expect(clippy::doc_markdown, reason = "not markdown, shown to end user")]
 #[poise::command(
 	slash_command,
 	category = "Utilities",
@@ -261,5 +268,228 @@ pub async fn selftimeout(
 	))
 	.await?;
 
+	Ok(())
+}
+
+/// Marks the current thread as solved
+#[poise::command(
+	prefix_command,
+	category = "Utilities",
+	discard_spare_arguments // to allow smooth integration in the closing message, e.g. "?solved, thank you"
+)]
+pub async fn solved(ctx: Context<'_>) -> Result<(), Error> {
+	let mut thread = ctx
+		.guild_channel()
+		.await
+		.filter(|channel| channel.kind == ChannelType::PublicThread)
+		.ok_or(anyhow!("not applicable here"))?;
+
+	let solved_tag = thread
+		.parent_id
+		.ok_or(anyhow!("thread lacks parent channel (¿dafuq?)"))? // to my knowledge threads can only ever exist within other channels
+		.to_channel(ctx)
+		.await?
+		.guild()
+		.ok_or(anyhow!("parent is not a guild channel (¿dafuq?)"))? // the thread itself is a guild channel, so its parent must be too
+		.available_tags
+		.into_iter()
+		.find(|tag| tag.name == "Solved")
+		.ok_or(anyhow!("no 'Solved' tag available here"))?; // plausible scenario (e.g. wrong forum, or non-forum thread)
+
+	let tags_old = &thread.applied_tags;
+
+	if tags_old.contains(&solved_tag.id) {
+		return Err(anyhow!("thread is already solved"));
+	}
+
+	let tags_new = tags_old.iter().copied().chain(iter::once(solved_tag.id));
+
+	thread
+		.edit_thread(ctx, EditThread::new().applied_tags(tags_new))
+		.await?;
+
+	Ok(())
+}
+/// Edit a message by its ID
+///
+/// /edit <`message_id`>
+///
+/// Replaces the content of the specified message with your next message.
+/// Only moderators can use this command.
+#[poise::command(
+	slash_command,
+	category = "Utilities",
+	check = "crate::checks::check_is_moderator",
+	on_error = "crate::helpers::acknowledge_fail"
+)]
+pub async fn edit(
+	ctx: Context<'_>,
+	#[description = "Link to the message to edit"] mut message: serenity::Message,
+) -> Result<(), Error> {
+	ctx.send(
+		poise::CreateReply::default()
+			.content("✅ Please send the new content for the message. I'll wait for 60 seconds.")
+			.ephemeral(true),
+	)
+	.await?;
+
+	// Wait for the next message from the same user in the same channel
+	let author_id = ctx.author().id;
+	let channel_id = ctx.channel_id();
+
+	let new_content = {
+		let collector = serenity::MessageCollector::new(ctx.serenity_context())
+			.author_id(author_id)
+			.channel_id(channel_id)
+			.timeout(Duration::from_mins(1));
+
+		match collector.next().await {
+			Some(msg) if !msg.content.is_empty() => msg.content,
+			Some(_) => {
+				ctx.send(
+					poise::CreateReply::default()
+						.content("❌ Empty message received. Edit cancelled.")
+						.ephemeral(true),
+				)
+				.await?;
+				return Ok(());
+			}
+			None => {
+				ctx.send(
+					poise::CreateReply::default()
+						.content(
+							"⏰ Timeout: No message received within 60 seconds. Edit cancelled.",
+						)
+						.ephemeral(true),
+				)
+				.await?;
+				return Ok(());
+			}
+		}
+	};
+
+	// Log the old message content before editing
+	if let Err(e) =
+		crate::helpers::send_audit_log(ctx, "Edit Command", ctx.author().id, &message.content).await
+	{
+		ctx.send(
+			poise::CreateReply::default()
+				.content(format!("❌ Failed to log audit information: {e}"))
+				.ephemeral(true),
+		)
+		.await?;
+		return Ok(());
+	}
+
+	message
+		.edit(&ctx, serenity::EditMessage::new().content(&new_content))
+		.await?;
+
+	ctx.send(
+		poise::CreateReply::default()
+			.content("✅ Message edited successfully!")
+			.ephemeral(true),
+	)
+	.await?;
+
+	Ok(())
+}
+
+#[poise::command(
+	slash_command,
+	prefix_command,
+	category = "Utilities",
+	on_error = "crate::helpers::acknowledge_fail"
+)]
+/// Shows information about the server
+pub async fn server(ctx: Context<'_>) -> Result<(), Error> {
+	let guild = ctx
+		.guild()
+		.ok_or(anyhow!("Failed to get guild information"))?
+		.clone();
+	let member_count = guild.member_count;
+	let online_member_count = guild
+		.members_with_status(serenity::OnlineStatus::Online)
+		.count();
+	let boost_count = guild.premium_subscription_count.unwrap_or_default();
+	let text_channel_count = guild
+		.channels
+		.iter()
+		.filter(|f| f.1.kind == ChannelType::Text)
+		.count();
+	let voice_channel_count = guild
+		.channels
+		.iter()
+		.filter(|f| f.1.kind == ChannelType::Voice)
+		.count();
+
+	info!("Got guild icon: {:?}", guild.icon_url());
+	let embed = CreateEmbed::new()
+        .title(&guild.name)
+        .thumbnail(guild.icon_url().unwrap_or_default())
+        .color(Color::ORANGE)
+        .fields([
+            ("Members", format!("{online_member_count}/{member_count}"), true),
+            ("Boost Count", format!("{boost_count}"), true),
+            ("Text Channels", format!("{text_channel_count}"), true),
+            ("Voice Channels", format!("{voice_channel_count}"), true),
+        ])
+        .description(
+            "The Rust Programming Language Community Server is all about learning and sharing Rust knowledge, and helping others.",
+        );
+	let reply = CreateReply {
+		embeds: vec![embed],
+
+		..Default::default()
+	};
+	ctx.send(reply).await?;
+
+	Ok(())
+}
+
+#[poise::command(
+	slash_command,
+	prefix_command,
+	category = "Utilities",
+	on_error = "crate::helpers::acknowledge_fail"
+)]
+/// Shows information about a user
+pub async fn user(
+	ctx: Context<'_>,
+	#[description = "User to get information about"] user: Option<serenity::User>,
+) -> Result<(), Error> {
+	let user = user.unwrap_or_else(|| ctx.author().clone());
+	let uid = user.id.get();
+	let name = user.display_name();
+	let handle = &user.name;
+	let created_at = user.created_at();
+	let guild = ctx
+		.guild()
+		.ok_or(anyhow!("Failed to get guild information"))?
+		.clone();
+	let member = guild.member(ctx.http(), uid).await?;
+	let joined_at = member.joined_at.unwrap_or_default();
+	let roles = member.roles(ctx.cache()).unwrap_or_default();
+
+	let thumbnail = user.avatar_url().unwrap_or_default();
+	let fields = [
+		("Created At", format!("{created_at}"), true),
+		("Joined At", format!("{joined_at}"), true),
+	];
+	let embed = CreateEmbed::new()
+		.title(format!("{name} ({handle})"))
+		.thumbnail(thumbnail)
+		.color(Color::ORANGE)
+		.description(format!("User ID: {uid}"))
+		.footer(CreateEmbedFooter::new(
+			roles.iter().map(|r| r.name.clone()).join(" | "),
+		))
+		.fields(fields);
+	let reply = CreateReply {
+		embeds: vec![embed],
+
+		..Default::default()
+	};
+	ctx.send(reply).await?;
 	Ok(())
 }

@@ -1,62 +1,100 @@
-on: [ push, pull_request ]
-
 name: CI
 
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
+  fmt:
+    name: 'Format (rustfmt)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install Rust (stable + rustfmt)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt
+
+    - name: Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: cargo fmt --check
+      run: cargo fmt --all --check
+
+  clippy:
+    name: 'Lint (clippy)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Install Rust (stable + clippy)
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+
+    - name: Install cargo-sqlx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: sqlx-cli
+
+    - name: Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: cargo sqlx prepare --check
+      run: cargo sqlx prepare --check
+
+    - name: cargo clippy
+      run: cargo clippy --all-targets -- -D warnings
+
   test:
-    name: Check Suite
-    runs-on: ${{ matrix.os || 'ubuntu-latest' }}
+    name: 'Test (${{ matrix.rust }}, ${{ matrix.os }})'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - stable
-          - beta
-          - macOS
-          - Windows
-          - no features
-
         include:
-          - name: beta
-            toolchain: beta
-          - name: macOS
-            os: macOS-latest
-          - name: Windows
-            os: windows-latest
-          - name: no features
-            feature_flags: --no-default-features
-
+        - rust: stable
+          os: ubuntu-latest
+        - rust: beta
+          os: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.toolchain || 'stable' }}
-          override: true
-      - run: cargo check ${{ matrix.feature_flags || '--all-features' }}
+    - name: Checkout
+      uses: actions/checkout@v4
 
-  fmt:
-    name: Rustfmt
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: rustup component add rustfmt
-      - run: cargo fmt --all -- --check
+    - name: Install Rust (${{ matrix.rust }})
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
 
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - run: rustup component add clippy
-      - run: cargo clippy --all-features -- -D warnings
+    - name: Install cargo-sqlx
+      uses: taiki-e/install-action@v2
+      with:
+        tool: sqlx-cli
+
+    - name: Rust cache
+      uses: Swatinem/rust-cache@v2
+
+    - name: cargo sqlx prepare --check
+      run: cargo sqlx prepare --check
+
+    - name: cargo test
+      run: cargo test --all-targets

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use anyhow::{anyhow, bail, Error};
+use anyhow::{Error, anyhow, bail};
 use reqwest::header;
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::info;
@@ -14,6 +14,7 @@ pub struct CommandFlags {
 	pub edition: Edition,
 	pub warn: bool,
 	pub run: bool,
+	pub aliasing_model: AliasingModel,
 }
 
 #[derive(Debug, Serialize)]
@@ -30,11 +31,16 @@ pub struct PlaygroundRequest<'a> {
 #[derive(Debug, Serialize)]
 pub struct MiriRequest<'a> {
 	pub edition: Edition,
+	#[serde(rename = "aliasingModel")]
+	pub aliasing_model: AliasingModel,
 	pub code: &'a str,
 }
 
-// has the same fields
-pub type MacroExpansionRequest<'a> = MiriRequest<'a>;
+#[derive(Debug, Serialize)]
+pub struct MacroExpansionRequest<'a> {
+	pub edition: Edition,
+	pub code: &'a str,
+}
 
 #[derive(Debug, Serialize)]
 pub struct ClippyRequest<'a> {
@@ -55,49 +61,6 @@ pub struct FormatResponse {
 	pub success: bool,
 	pub code: String,
 	pub stderr: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CompileRequest<'a> {
-	pub assembly_flavor: AssemblyFlavour,
-	pub backtrace: bool,
-	pub channel: Channel,
-	pub code: &'a str,
-	pub crate_type: CrateType,
-	pub demangle_assembly: DemangleAssembly,
-	pub edition: Edition,
-	pub mode: Mode,
-	pub process_assembly: ProcessAssembly,
-	pub target: CompileTarget,
-	pub tests: bool,
-}
-
-#[derive(Debug, Default, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AssemblyFlavour {
-	#[default]
-	Intel,
-	#[allow(dead_code)]
-	Att,
-}
-
-#[derive(Debug, Default, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DemangleAssembly {
-	#[default]
-	Demangle,
-	#[allow(dead_code)]
-	Mangle,
-}
-
-#[derive(Debug, Default, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProcessAssembly {
-	#[default]
-	Filter,
-	#[allow(dead_code)]
-	Raw,
 }
 
 #[derive(Debug, Serialize)]
@@ -127,7 +90,7 @@ impl FromStr for Channel {
 			"stable" => Ok(Channel::Stable),
 			"beta" => Ok(Channel::Beta),
 			"nightly" => Ok(Channel::Nightly),
-			_ => bail!("invalid release channel `{}`", s),
+			_ => bail!("invalid release channel `{s}`"),
 		}
 	}
 }
@@ -153,7 +116,7 @@ impl FromStr for Edition {
 			"2018" => Ok(Edition::E2018),
 			"2021" => Ok(Edition::E2021),
 			"2024" => Ok(Edition::E2024),
-			_ => bail!("invalid edition `{}`", s),
+			_ => bail!("invalid edition `{s}`"),
 		}
 	}
 }
@@ -181,8 +144,27 @@ impl FromStr for Mode {
 		match s {
 			"debug" => Ok(Mode::Debug),
 			"release" => Ok(Mode::Release),
-			_ => bail!("invalid compilation mode `{}`", s),
+			_ => bail!("invalid compilation mode `{s}`"),
 		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AliasingModel {
+	Stacked,
+	Tree,
+}
+
+impl FromStr for AliasingModel {
+	type Err = Error;
+
+	fn from_str(s: &str) -> Result<Self, Error> {
+		Ok(match s {
+			"stacked" => AliasingModel::Stacked,
+			"tree" => AliasingModel::Tree,
+			_ => bail!("invalid aliasing model `{s}`"),
+		})
 	}
 }
 
@@ -191,6 +173,20 @@ pub struct PlayResult {
 	pub success: bool,
 	pub stdout: String,
 	pub stderr: String,
+}
+
+impl PlayResult {
+	/// Inserts invisible whitespace in sequences of more than 2 backticks to prevent
+	/// escaping discord code blocks
+	pub fn sanitize_backticks(&mut self) {
+		if self.stdout.contains("```") {
+			self.stdout = self.stdout.replace("``", "``\u{200b}");
+		}
+
+		if self.stderr.contains("```") {
+			self.stderr = self.stderr.replace("``", "``\u{200b}");
+		}
+	}
 }
 
 impl<'de> Deserialize<'de> for PlayResult {

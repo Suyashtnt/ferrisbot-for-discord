@@ -1,10 +1,11 @@
+use core::fmt::Write as _;
 use std::borrow::Cow;
 
 use poise::serenity_prelude as serenity;
 use serenity::ComponentInteraction;
 
-use crate::types::Context;
 use crate::Error;
+use crate::types::Context;
 
 use super::api;
 
@@ -27,9 +28,10 @@ pub fn parse_flags(mut args: poise::KeyValueArgs) -> (api::CommandFlags, String)
 	let mut flags = api::CommandFlags {
 		channel: api::Channel::Nightly,
 		mode: api::Mode::Debug,
-		edition: api::Edition::E2021,
+		edition: api::Edition::E2024,
 		warn: false,
 		run: false,
+		aliasing_model: api::AliasingModel::Stacked,
 	};
 
 	macro_rules! pop_flag {
@@ -37,7 +39,9 @@ pub fn parse_flags(mut args: poise::KeyValueArgs) -> (api::CommandFlags, String)
 			if let Some(flag) = args.0.remove($flag_name) {
 				match flag.parse() {
 					Ok(x) => $flag_field = x,
-					Err(e) => errors += &format!("{}\n", e),
+					Err(e) => {
+						writeln!(errors, "{e}").expect("Writing to a String should never fail")
+					}
 				}
 			}
 		};
@@ -48,14 +52,17 @@ pub fn parse_flags(mut args: poise::KeyValueArgs) -> (api::CommandFlags, String)
 	pop_flag!("edition", flags.edition);
 	pop_flag!("warn", flags.warn);
 	pop_flag!("run", flags.run);
+	pop_flag!("aliasingModel", flags.aliasing_model);
 
 	for (remaining_flag, _) in args.0 {
-		errors += &format!("unknown flag `{remaining_flag}`\n");
+		writeln!(errors, "unknown flag `{remaining_flag}`")
+			.expect("Writing to a String should never fail");
 	}
 
 	(flags, errors)
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Copy)]
 pub struct GenericHelp<'a> {
 	pub command: &'a str,
@@ -63,6 +70,7 @@ pub struct GenericHelp<'a> {
 	pub mode_and_channel: bool,
 	pub warn: bool,
 	pub run: bool,
+	pub aliasing_model: bool,
 	pub example_code: &'a str,
 }
 
@@ -78,6 +86,9 @@ pub fn generic_help(spec: GenericHelp<'_>) -> String {
 		reply += " mode={} channel={}";
 	}
 	reply += " edition={}";
+	if spec.aliasing_model {
+		reply += " aliasingModel={}";
+	}
 	if spec.warn {
 		reply += " warn={}";
 	}
@@ -93,7 +104,10 @@ pub fn generic_help(spec: GenericHelp<'_>) -> String {
 		reply += "- mode: debug, release (default: debug)\n";
 		reply += "- channel: stable, beta, nightly (default: nightly)\n";
 	}
-	reply += "- edition: 2015, 2018, 2021, 2024 (default: 2021)\n";
+	if spec.aliasing_model {
+		reply += "- aliasingModel: stacked, tree (default: stacked)\n";
+	}
+	reply += "- edition: 2015, 2018, 2021, 2024 (default: 2024)\n";
 	if spec.warn {
 		reply += "- warn: true, false (default: false)\n";
 	}
@@ -220,10 +234,11 @@ pub fn maybe_wrapped(
 			Attribute::parse_inner(input)?;
 			let stmts = Block::parse_within(input)?;
 			for stmt in &stmts {
-				if let Stmt::Item(Item::Fn(ItemFn { sig, .. })) = stmt {
-					if sig.ident == "main" && sig.inputs.is_empty() {
-						return Err(input.error("main"));
-					}
+				if let Stmt::Item(Item::Fn(ItemFn { sig, .. })) = stmt
+					&& sig.ident == "main"
+					&& sig.inputs.is_empty()
+				{
+					return Err(input.error("main"));
 				}
 			}
 			Ok(Self {})
@@ -272,11 +287,13 @@ pub fn maybe_wrapped(
 /// Send a Discord reply with the formatted contents of a Playground result
 pub async fn send_reply(
 	ctx: Context<'_>,
-	result: api::PlayResult,
+	mut result: api::PlayResult,
 	code: &str,
 	flags: &api::CommandFlags,
 	flag_parse_errors: &str,
 ) -> Result<(), Error> {
+	result.sanitize_backticks();
+
 	let result = crate::helpers::merge_output_and_errors(&result.stdout, &result.stderr);
 
 	// Discord displays empty code blocks weirdly if they're not formatted in a specific style,
@@ -289,7 +306,7 @@ pub async fn send_reply(
 	let timeout =
 		result.contains("Killed") && result.contains("timeout") && result.contains("--signal=KILL");
 
-	let mut text_end = String::from("```");
+	let mut text_end = String::from("\n```");
 	if timeout {
 		text_end += "Playground timeout detected";
 	}
@@ -327,7 +344,7 @@ pub async fn send_reply(
 		.await?
 		.await_component_interaction(ctx)
 		.filter(move |mci: &ComponentInteraction| mci.data.custom_id == custom_id)
-		.timeout(std::time::Duration::from_secs(600))
+		.timeout(std::time::Duration::from_mins(10))
 		.await
 	{
 		retry_pressed.defer(&ctx).await?;
@@ -406,7 +423,6 @@ pub fn format_play_eval_stderr(stderr: &str, show_compiler_warnings: bool) -> St
 		} else {
 			program_stderr.to_owned()
 		}
-		.replace('`', "\u{200b}`")
 	} else {
 		// Program didn't get to run, so there must be an error, so we yield the compiler output
 		// regardless of whether warn is enabled or not
@@ -417,14 +433,11 @@ pub fn format_play_eval_stderr(stderr: &str, show_compiler_warnings: bool) -> St
 pub fn stub_message(ctx: Context<'_>) -> String {
 	let mut stub_message = String::from("_Running code on playground..._\n");
 
-	if let Context::Prefix(ctx) = ctx {
-		if let Some(edit_tracker) = &ctx.framework.options().prefix_options.edit_tracker {
-			if let Some(existing_response) =
-				edit_tracker.read().unwrap().find_bot_response(ctx.msg.id)
-			{
-				stub_message += &existing_response.content;
-			}
-		}
+	if let Context::Prefix(ctx) = ctx
+		&& let Some(edit_tracker) = &ctx.framework.options().prefix_options.edit_tracker
+		&& let Some(existing_response) = edit_tracker.read().unwrap().find_bot_response(ctx.msg.id)
+	{
+		stub_message += &existing_response.content;
 	}
 
 	stub_message.truncate(2000);

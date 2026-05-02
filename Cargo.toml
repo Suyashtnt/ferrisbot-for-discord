@@ -1,27 +1,51 @@
 [package]
 name = "ferrisbot-for-discord"
 version = "0.1.0"
-authors = ["kangalioo", "technetos <mrgould93@gmail.com>", "Ivan Dardi <ivanbdardi@gmail.com>"]
-edition = "2021"
+authors = [
+  "kangalioo",
+  "technetos <mrgould93@gmail.com>",
+  "Ivan Dardi <ivanbdardi@gmail.com>",
+]
+edition = "2024"
 license = "MIT"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-shuttle-runtime = "0.47.0"
-shuttle-serenity = "0.47.0"
-shuttle-shared-db = { version = "0.47.0", features = ["postgres", "sqlx"] }
-poise = "0.6"
+ab_glyph = { version = "0.2", default-features = false }
 anyhow = "1.0"
-tokio = "1.28"
-tracing = "0.1.37"
+figment = { version = "0.10.19", features = ["env", "toml"] }
+futures = "0.3.31"
+image = { version = "0.25", default-features = false, features = ["png"] }
+imageproc = { version = "0.25", default-features = false }
+itertools = "0.14"
+poise = { version = "0.6", default-features = false, features = [
+  "default",
+  "handle_panics",
+] }
+proc-macro2 = { version = "1.0.95", features = ["span-locations"] }
+rand = "0.9"
+regex = "1.10"
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sqlx = { version = "0.7.0", features = ["runtime-tokio-native-tls", "postgres", "macros"] }
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
-image = { version = "0.24", default-features = false, features = ["png"] } # get a better computer meme rendering
-imageproc = { version = "0.23", default-features = false } # get a better computer meme rendering
-rusttype = { version = "0.9", default-features = false } # interact with imageproc
-rand = "0.8.5"
-syn = { version = "2.0.68", features = ["full"] }
-itertools = "0.12.0"
+snafu = "0.8.9"
+strum = { version = "0.27", features = ["derive"] }
+subenum = "0.1"
+sqlx = { version = "0.8.6", features = [
+  "macros",
+  "sqlite",
+  "runtime-tokio",
+] }
+syn = { version = "2.0.104", default-features = false, features = [
+  "full",
+  "parsing",
+  "printing",
+] }
+tokio = { version = "1.47", features = ["rt-multi-thread"] }
+tracing = "0.1.41"
+tracing-appender = "0.2.4"
+tracing-log = "0.2.0"
+tracing-panic = "0.1.2"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }

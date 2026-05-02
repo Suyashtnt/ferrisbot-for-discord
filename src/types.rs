@@ -1,66 +1,54 @@
-use std::sync::Arc;
+use std::{
+	collections::HashSet,
+	sync::{Arc, Mutex as StdMutex},
+};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result};
 use poise::serenity_prelude as serenity;
-use shuttle_runtime::SecretStore;
+use tokio::sync::RwLock;
 
-use crate::commands;
+use crate::{SecretStore, commands};
 
 #[derive(Debug)]
 pub struct Data {
-	pub database: sqlx::PgPool,
+	pub highlights: RwLock<commands::highlight::RegexHolder>,
+	pub database: Option<sqlx::SqlitePool>,
 	pub discord_guild_id: serenity::GuildId,
 	pub application_id: serenity::UserId,
 	pub mod_role_id: serenity::RoleId,
+	pub mod_consultant_role_id: serenity::RoleId,
 	pub rustacean_role_id: serenity::RoleId,
 	pub modmail_channel_id: serenity::ChannelId,
+	pub modlog_channel_id: serenity::ChannelId,
 	pub modmail_message: Arc<tokio::sync::RwLock<Option<serenity::Message>>>,
 	pub bot_start_time: std::time::Instant,
 	pub http: reqwest::Client,
-	pub godbolt_metadata: std::sync::Mutex<commands::godbolt::GodboltMetadata>,
+	pub godbolt_metadata: StdMutex<commands::godbolt::GodboltMetadata>,
+	pub move_channel_locks: StdMutex<HashSet<serenity::ChannelId>>,
 }
 
 impl Data {
-	pub fn new(secret_store: &SecretStore, database: sqlx::PgPool) -> Result<Self> {
+	pub async fn new(
+		secret_store: &SecretStore,
+		database: Option<sqlx::SqlitePool>,
+	) -> Result<Self> {
 		Ok(Self {
+			highlights: RwLock::new(commands::highlight::RegexHolder::new(database.as_ref()).await),
 			database,
-			discord_guild_id: secret_store
-				.get("DISCORD_GUILD")
-				.ok_or(anyhow!(
-					"Failed to get 'DISCORD_GUILD' from the secret store"
-				))?
-				.parse::<u64>()?
+			discord_guild_id: secret_store.get_discord_id("DISCORD_GUILD")?.into(),
+			application_id: secret_store.get_discord_id("APPLICATION_ID")?.into(),
+			mod_role_id: secret_store.get_discord_id("MOD_ROLE_ID")?.into(),
+			mod_consultant_role_id: secret_store
+				.get_discord_id("MOD_CONSULTANT_ROLE_ID")?
 				.into(),
-			application_id: secret_store
-				.get("APPLICATION_ID")
-				.ok_or(anyhow!(
-					"Failed to get 'APPLICATION_ID' from the secret store"
-				))?
-				.parse::<u64>()?
-				.into(),
-			mod_role_id: secret_store
-				.get("MOD_ROLE_ID")
-				.ok_or(anyhow!("Failed to get 'MOD_ROLE_ID' from the secret store"))?
-				.parse::<u64>()?
-				.into(),
-			rustacean_role_id: secret_store
-				.get("RUSTACEAN_ROLE_ID")
-				.ok_or(anyhow!(
-					"Failed to get 'RUSTACEAN_ROLE_ID' from the secret store"
-				))?
-				.parse::<u64>()?
-				.into(),
-			modmail_channel_id: secret_store
-				.get("MODMAIL_CHANNEL_ID")
-				.ok_or(anyhow!(
-					"Failed to get 'MODMAIL_CHANNEL_ID' from the secret store"
-				))?
-				.parse::<u64>()?
-				.into(),
+			rustacean_role_id: secret_store.get_discord_id("RUSTACEAN_ROLE_ID")?.into(),
+			modmail_channel_id: secret_store.get_discord_id("MODMAIL_CHANNEL_ID")?.into(),
+			modlog_channel_id: secret_store.get_discord_id("MODLOG_CHANNEL_ID")?.into(),
 			modmail_message: Arc::default(),
 			bot_start_time: std::time::Instant::now(),
 			http: reqwest::Client::new(),
-			godbolt_metadata: std::sync::Mutex::new(commands::godbolt::GodboltMetadata::default()),
+			godbolt_metadata: StdMutex::new(commands::godbolt::GodboltMetadata::default()),
+			move_channel_locks: StdMutex::new(HashSet::new()),
 		})
 	}
 }

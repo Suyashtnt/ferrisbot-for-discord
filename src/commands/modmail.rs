@@ -1,9 +1,20 @@
-use crate::types::{Context, Data};
-use anyhow::{anyhow, Error};
+use anyhow::{Context as AnyhowContext, Error, anyhow};
 use poise::serenity_prelude as serenity;
 use poise::serenity_prelude::{EditThread, GuildChannel, Mentionable, UserId};
-use rand::{thread_rng, Rng};
+use rand::Rng;
 use tracing::{debug, info};
+
+use crate::types::{Context, Data};
+
+/// Sends a success response after creating a modmail thread.
+async fn send_modmail_success(ctx: Context<'_>, modmail: &GuildChannel) -> Result<(), Error> {
+	ctx.say(format!(
+		"Successfully sent your message to the moderators. Check out your modmail thread here: {}",
+		modmail.mention()
+	))
+	.await?;
+	Ok(())
+}
 
 /// Opens a modmail thread for a message. To use, right-click the message that
 /// you want to report, then go to "Apps" > "Open Modmail".
@@ -20,15 +31,11 @@ pub async fn modmail_context_menu_for_message(
 ) -> Result<(), Error> {
 	let message = format!(
 		"Message reported: {}\n\nMessage contents:\n\n{}",
-		message.link_ensured(ctx).await,
+		message.id.link(ctx.channel_id(), ctx.guild_id()),
 		message.content_safe(ctx)
 	);
 	let modmail = create_modmail_thread(ctx, message, ctx.data(), ctx.author().id).await?;
-	ctx.say(format!(
-		"Successfully sent your message to the moderators. Check out your modmail thread here: {}",
-		modmail.mention()
-	))
-	.await?;
+	send_modmail_success(ctx, &modmail).await?;
 	Ok(())
 }
 
@@ -44,13 +51,12 @@ pub async fn modmail_context_menu_for_user(
 	ctx: Context<'_>,
 	#[description = "User to automatically link when opening a modmail"] user: serenity::User,
 ) -> Result<(), Error> {
-	let message = format!("User reported:\n{}\n{}\n\nPlease provide additional information about the user being reported.", user.id, user.name);
+	let message = format!(
+		"User reported:\n{}\n{}\n\nPlease provide additional information about the user being reported.",
+		user.id, user.name
+	);
 	let modmail = create_modmail_thread(ctx, message, ctx.data(), ctx.author().id).await?;
-	ctx.say(format!(
-		"Successfully sent your message to the moderators. Check out your modmail thread here: {}",
-		modmail.mention()
-	))
-	.await?;
+	send_modmail_success(ctx, &modmail).await?;
 	Ok(())
 }
 
@@ -79,11 +85,7 @@ pub async fn modmail(
 		ctx.channel_id().mention()
 	);
 	let modmail = create_modmail_thread(ctx, message, ctx.data(), ctx.author().id).await?;
-	ctx.say(format!(
-		"Successfully sent your message to the moderators. Check out your modmail thread here: {}",
-		modmail.mention()
-	))
-	.await?;
+	send_modmail_success(ctx, &modmail).await?;
 	Ok(())
 }
 
@@ -102,9 +104,9 @@ pub async fn load_or_create_modmail_message(
 		.modmail_channel_id
 		.to_channel(&http)
 		.await
-		.map_err(|e| anyhow!(e).context("Cannot enter modmail channel"))?
+		.context("Cannot enter modmail channel")?
 		.guild()
-		.ok_or(anyhow!("This command can only be used in a guild"))?;
+		.ok_or_else(|| anyhow!("Modmail channel is not a guild channel"))?;
 
 	// Fetch the report message itself
 	let open_report_message = modmail_guild_channel
@@ -171,11 +173,12 @@ pub async fn create_modmail_thread(
 
 	let modmail_channel = modmail_message
 		.channel(&http)
-		.await?
+		.await
+		.context("Failed to fetch modmail channel")?
 		.guild()
-		.ok_or(anyhow!("Modmail channel is not in a guild!"))?;
+		.ok_or_else(|| anyhow!("Modmail channel is not in a guild"))?;
 
-	let modmail_name = format!("Modmail #{}", thread_rng().gen_range(1..10000));
+	let modmail_name = format!("Modmail #{}", rand::rng().random_range(1..10000));
 
 	let mut modmail_thread = modmail_channel
 		.create_thread(
@@ -190,8 +193,9 @@ pub async fn create_modmail_thread(
 		.await?;
 
 	let thread_message_content = format!(
-		"Hey {}, {} needs help with the following:\n> {}",
+		"Hey {} (cc: {}), {} needs help with the following:\n> {}",
 		data.mod_role_id.mention(),
+		data.mod_consultant_role_id.mention(),
 		user_id.mention(),
 		user_message.into()
 	);
@@ -204,7 +208,7 @@ pub async fn create_modmail_thread(
 				.allowed_mentions(
 					serenity::CreateAllowedMentions::new()
 						.users([user_id])
-						.roles([data.mod_role_id]),
+						.roles([data.mod_role_id, data.mod_consultant_role_id]),
 				),
 		)
 		.await?;

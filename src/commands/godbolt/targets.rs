@@ -1,6 +1,6 @@
 use std::iter::once;
 
-use anyhow::{anyhow, Error};
+use anyhow::{Error, anyhow};
 use poise::serenity_prelude as serenity;
 use tracing::{error, info};
 
@@ -60,7 +60,7 @@ async fn update_godbolt_metadata(data: &Data) -> Result<(), Error> {
 			.and_then(|duration| duration.parse::<u64>().ok())
 			.map_or_else(
 				// Currently set for 12 hours
-				|| std::time::Duration::from_secs(60 * 60 * 12),
+				|| std::time::Duration::from_hours(12),
 				std::time::Duration::from_secs,
 			);
 
@@ -145,10 +145,11 @@ pub(crate) async fn rustc_id_and_flags(
 		.cloned()
 		.ok_or(anyhow!(
 			"the `rustc` argument should be a version specifier like `nightly` `beta` or `1.45.2`. \
-            Run ?targets for a full list"))?;
+            Run ?targets for a full list"
+		))?;
 
 	let opt_level = params.get("-Copt-level").unwrap_or("3");
-	let edition = params.get("--edition").unwrap_or("2021");
+	let edition = params.get("--edition").unwrap_or("2024");
 	let flags = itertools::Itertools::intersperse(params
 		.0
 		.iter()
